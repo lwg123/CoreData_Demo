@@ -90,13 +90,20 @@
     [self.backgroundContext setPersistentStoreCoordinator:self.mainContext.persistentStoreCoordinator];
      */
     
+    /*
+     使用child/parent context的方法如下创建子线程context
+     不需要监听变化，因为变化会自动提交到mainContext
+    self.backgroundContext = [[NSManagedObjectContext alloc] initWithConcurrencyType:NSPrivateQueueConcurrencyType];
+    [self.backgroundContext setParentContext:self.mainContext];
+     */
+    
     // 添加后台线程的通知
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(receiveContextSave:) name:NSManagedObjectContextDidSaveNotification object:self.backgroundContext];
     /*
     [[NSNotificationCenter defaultCenter] addObserverForName:NSManagedObjectContextDidSaveNotification object:nil queue:[NSOperationQueue currentQueue] usingBlock:^(NSNotification * _Nonnull note) {
         if (note.object == self.backgroundContext) {
             dispatch_async(dispatch_get_main_queue(), ^{
-                [self.myAppdelegate.persistentContainer.viewContext mergeChangesFromContextDidSaveNotification:note];
+                [self.mainContext mergeChangesFromContextDidSaveNotification:note];
             });
         }
     }];
@@ -151,11 +158,12 @@
         if ([self.backgroundContext hasChanges]) {
             [self.backgroundContext save:nil];
         }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [self getData];
-            [_tableView reloadData];
-        });
     }];
+    
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self getData];
+        [_tableView reloadData];
+    });
 }
 
 - (void)receiveContextSave:(NSNotification *)note {
