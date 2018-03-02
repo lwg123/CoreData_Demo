@@ -17,6 +17,7 @@
 @property (nonatomic,strong) NSMutableArray *dataSource;
 // 后台操作context
 @property (nonatomic,strong) NSManagedObjectContext *backgroundContext;
+@property (nonatomic,strong) NSManagedObjectContext *mainContext;
 
 // 通过这个appdelegate对象引入管理器
 @property (nonatomic,strong) AppDelegate *myAppdelegate;
@@ -25,11 +26,15 @@
 
 @implementation ViewController
 
+- (NSManagedObjectContext *)mainContext {
+    return self.myAppdelegate.persistentContainer.viewContext;
+}
+
 // 插入数据
 - (IBAction)addModel:(UIBarButtonItem *)sender {
     
     // 创建实体描述对象
-    NSEntityDescription *description = [NSEntityDescription entityForName:@"Clothes" inManagedObjectContext:_myAppdelegate.persistentContainer.viewContext];
+    NSEntityDescription *description = [NSEntityDescription entityForName:@"Clothes" inManagedObjectContext:self.mainContext];
     
     //创建实体模型
     Clothes *cloth = [[Clothes alloc] initWithEntity:description insertIntoManagedObjectContext:_myAppdelegate.persistentContainer.viewContext];
@@ -50,6 +55,23 @@
     [_myAppdelegate saveContext];
 }
 
+// 删除全部数据
+- (IBAction)deleteData:(id)sender {
+    
+    NSFetchRequest *request = [[NSFetchRequest alloc] init];
+    NSEntityDescription *entity = [NSEntityDescription entityForName:@"Clothes" inManagedObjectContext:self.mainContext];
+    [request setEntity:entity];
+    NSMutableArray *mutableFetchResult = [[self.mainContext executeFetchRequest:request error:nil] mutableCopy];
+    for (Clothes *cloth in mutableFetchResult) {
+        [self.mainContext deleteObject:cloth];
+    }
+    [self.mainContext save:nil];
+    
+    [self getData];
+    [_tableView reloadData];
+}
+
+
 - (void)viewDidLoad {
     [super viewDidLoad];
     
@@ -59,11 +81,27 @@
     self.myAppdelegate = (AppDelegate *)[UIApplication sharedApplication].delegate;
     
     self.tableView.rowHeight = 40;
-    
+    // iOS 10以后才可以使用此方法
     NSManagedObjectContext *backgroundContext = ((AppDelegate *)[UIApplication sharedApplication].delegate).persistentContainer.newBackgroundContext;
     self.backgroundContext = backgroundContext;
+    /*
+     ios10以前需要使用这个创建方法
+    self.backgroundContext = [[NSManagedObjectContext alloc] initWithConcurrencyType:NSPrivateQueueConcurrencyType];
+    [self.backgroundContext setPersistentStoreCoordinator:self.mainContext.persistentStoreCoordinator];
+     */
     
+    // 添加后台线程的通知
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(receiveContextSave:) name:NSManagedObjectContextDidSaveNotification object:self.backgroundContext];
+    /*
+    [[NSNotificationCenter defaultCenter] addObserverForName:NSManagedObjectContextDidSaveNotification object:nil queue:[NSOperationQueue currentQueue] usingBlock:^(NSNotification * _Nonnull note) {
+        if (note.object == self.backgroundContext) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self.myAppdelegate.persistentContainer.viewContext mergeChangesFromContextDidSaveNotification:note];
+            });
+        }
+    }];
+     */
+    
     // 首先获取数据库中的数据
     [self getData];
     // 执行异步操作的数据
@@ -72,6 +110,7 @@
 
 // 获取数据源
 - (void)getData {
+    // 先清除数据，再从数据库中获取
     [self.dataSource removeAllObjects];
     //查询
     // 1.NSFetchRequest对象
@@ -84,7 +123,7 @@
     
     // 3.执行查询请求,返回一个数组
     NSError *error = nil;
-    NSArray *result = [self.myAppdelegate.persistentContainer.viewContext executeFetchRequest:request error:&error];
+    NSArray *result = [self.mainContext executeFetchRequest:request error:&error];
     
     // 4.给数据源数组中添加数据
     [self.dataSource addObjectsFromArray:result];
@@ -97,19 +136,21 @@
  */
 - (void)doSometingInBackground {
     // 在后台从事一些耗时操作
+    for (NSUInteger i = 0; i < 10; i++) {
+        NSString *name = [NSString stringWithFormat:@"Puma-%d", arc4random_uniform(99)];
+        int64_t price = arc4random() % 1000 + 1;
+        
+        Clothes *cloth = [NSEntityDescription insertNewObjectForEntityForName:@"Clothes" inManagedObjectContext:self.backgroundContext];
+        cloth.name = name;
+        cloth.price = price;
+    }
+    
     [self.backgroundContext performBlock:^{
-        for (NSUInteger i = 0; i < 10; i++) {
-            NSString *name = [NSString stringWithFormat:@"Puma-%d", arc4random_uniform(99)];
-            int64_t price = arc4random() % 1000 + 1;
-            
-            Clothes *cloth = [NSEntityDescription insertNewObjectForEntityForName:@"Clothes" inManagedObjectContext:self.backgroundContext];
-            cloth.name = name;
-            cloth.price = price;
+        
+        // 调用save会调用通知方法receiveContextSave合并改变
+        if ([self.backgroundContext hasChanges]) {
+            [self.backgroundContext save:nil];
         }
-        
-        NSError *error;
-        [self.backgroundContext save:&error];
-        
         dispatch_async(dispatch_get_main_queue(), ^{
             [self getData];
             [_tableView reloadData];
@@ -118,7 +159,7 @@
 }
 
 - (void)receiveContextSave:(NSNotification *)note {
-    [self.myAppdelegate.persistentContainer.viewContext mergeChangesFromContextDidSaveNotification:note];
+    [self.mainContext mergeChangesFromContextDidSaveNotification:note];
 }
 
 - (void)dealloc {
@@ -128,7 +169,6 @@
 #pragma mark - TableView的数据源和代理
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView{
-    NSLog(@"加载数据-----");
     return 1;
 }
 
@@ -154,7 +194,7 @@
         [self.dataSource removeObject:cloth];
         
         // 删除数据管理器中的数据
-        [self.myAppdelegate.persistentContainer.viewContext deleteObject:cloth];
+        [self.mainContext deleteObject:cloth];
         
         //将更改进行保存
         [self.myAppdelegate saveContext];
@@ -163,8 +203,6 @@
         [_tableView beginUpdates];
         [self.tableView deleteRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationFade];
         [_tableView endUpdates];
-        
-        
     }
 }
 
@@ -184,8 +222,6 @@
     // 通过saveContext保存
     [self.myAppdelegate saveContext];
 }
-
-
 
 
 @end
