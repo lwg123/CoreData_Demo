@@ -15,6 +15,8 @@
 @property (weak, nonatomic) IBOutlet UITableView *tableView;
 
 @property (nonatomic,strong) NSMutableArray *dataSource;
+// 后台操作context
+@property (nonatomic,strong) NSManagedObjectContext *backgroundContext;
 
 // 通过这个appdelegate对象引入管理器
 @property (nonatomic,strong) AppDelegate *myAppdelegate;
@@ -39,29 +41,38 @@
     [self.dataSource addObject:cloth];
     
     NSIndexPath *indexpath= [NSIndexPath indexPathForRow:self.dataSource.count-1 inSection:0];
-    
+
     [self.tableView insertRowsAtIndexPaths:@[indexpath] withRowAnimation:UITableViewRowAnimationLeft];
     
-   // [self.tableView reloadData];
+    //[self.tableView reloadData];
     
     // 保存在数据管理器
     [_myAppdelegate saveContext];
-    
-    
-    
 }
 
 - (void)viewDidLoad {
     [super viewDidLoad];
     
     self.automaticallyAdjustsScrollViewInsets = NO;
-    // 出初化
     self.dataSource = [NSMutableArray array];
     
     self.myAppdelegate = (AppDelegate *)[UIApplication sharedApplication].delegate;
     
     self.tableView.rowHeight = 40;
     
+    NSManagedObjectContext *backgroundContext = ((AppDelegate *)[UIApplication sharedApplication].delegate).persistentContainer.newBackgroundContext;
+    self.backgroundContext = backgroundContext;
+    
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(receiveContextSave:) name:NSManagedObjectContextDidSaveNotification object:self.backgroundContext];
+    // 首先获取数据库中的数据
+    [self getData];
+    // 执行异步操作的数据
+    [self performSelector:@selector(doSometingInBackground) withObject:nil afterDelay:3.0];
+}
+
+// 获取数据源
+- (void)getData {
+    [self.dataSource removeAllObjects];
     //查询
     // 1.NSFetchRequest对象
     NSFetchRequest *request = [[NSFetchRequest alloc] initWithEntityName:@"Clothes"];
@@ -72,27 +83,52 @@
     request.sortDescriptors = @[sortDescriptor]; // 是一个数组，可以添加多个排序对象
     
     // 3.执行查询请求,返回一个数组
-    
     NSError *error = nil;
     NSArray *result = [self.myAppdelegate.persistentContainer.viewContext executeFetchRequest:request error:&error];
-   
+    
     // 4.给数据源数组中添加数据
     [self.dataSource addObjectsFromArray:result];
-    
-    
 }
 
-
-- (void)didReceiveMemoryWarning {
-    [super didReceiveMemoryWarning];
-    // Dispose of any resources that can be recreated.
+/*
+ 后台 context的操作放在 performBlock 或 performBlockAndWait 方法里执行，
+ performBlock 会异步的执行，不会阻塞当前的线程，
+ 而 performBlockAndWait 则会阻塞当前的线程直到方法返回才会继续向下执行
+ */
+- (void)doSometingInBackground {
+    // 在后台从事一些耗时操作
+    [self.backgroundContext performBlock:^{
+        for (NSUInteger i = 0; i < 10; i++) {
+            NSString *name = [NSString stringWithFormat:@"Puma-%d", arc4random_uniform(99)];
+            int64_t price = arc4random() % 1000 + 1;
+            
+            Clothes *cloth = [NSEntityDescription insertNewObjectForEntityForName:@"Clothes" inManagedObjectContext:self.backgroundContext];
+            cloth.name = name;
+            cloth.price = price;
+        }
+        
+        NSError *error;
+        [self.backgroundContext save:&error];
+        
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self getData];
+            [_tableView reloadData];
+        });
+    }];
 }
 
+- (void)receiveContextSave:(NSNotification *)note {
+    [self.myAppdelegate.persistentContainer.viewContext mergeChangesFromContextDidSaveNotification:note];
+}
 
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
 
-#pragma mark - tableView的数据源和代理
+#pragma mark - TableView的数据源和代理
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView{
+    NSLog(@"加载数据-----");
     return 1;
 }
 
@@ -124,7 +160,9 @@
         [self.myAppdelegate saveContext];
         
         // 删除单元格
+        [_tableView beginUpdates];
         [self.tableView deleteRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationFade];
+        [_tableView endUpdates];
         
         
     }
